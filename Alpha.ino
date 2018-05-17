@@ -2,13 +2,13 @@
 
 #include<Wire.h>
 #include"IMU.h"
-//hellow
+
 
 #define degconvert 57.2957786 
-#define accelw 0.004
-#define gyrow 0.996
+float accelw =0.004;
+float gyrow= 0.996;
 #define acc_smt 8
-
+#define inv_degconvt 0.01745329279
 
 
 int calibration;
@@ -16,8 +16,9 @@ double dt;
 float roll=0,pitch=0,yaw=0;
 float gyro[3],acc[3];
 float gyro_cal[3];
-uint32_t loop_timer,pid_loop_timer;
+uint32_t loop_timer;
 bool flag=0;
+float out[3];
 float dcm[][3] = { 1, 0, 0,
                    0, 1, 0,
                    0, 0, 1 };
@@ -34,18 +35,18 @@ double dtheta[3] = { 0, 0, 0};              //roll,pitch,yaw
 
 ////####GLOBAL VARIABLES##########\\\\\\\\\\\\
 
-byte last_channel_1, last_channel_2, last_channel_3, last_channel_4,last_channel_5, last_channel_6;
-unsigned long timer_channel_1, timer_channel_2, timer_channel_3, timer_channel_4,timer_channel_5,timer_channel_6, esc_timer, esc_loop_timer;
+byte last_channel_1, last_channel_2, last_channel_3, last_channel_4,last_channel_5,last_channel_6;
+unsigned long timer_channel_1, timer_channel_2, timer_channel_3, timer_channel_4,timer_channel_5,timer_channel_6, esc_timer, esc_loop_timer,loop_timer_pid;
 
 unsigned long timer_1, timer_2, timer_3, timer_4,timer_5,timer_6, current_time;
 
-unsigned long throttle,throttle1,rec_input_5,rec_input_6,last_throttle;             ///net throtle only input
+unsigned int throttle,throttle1,last_throttle, rec_arm,rec6;
 double u2[4];                 ///error matrix
 int esc_1, esc_2, esc_3, esc_4;      ///outputs to motors
 ////####COEFFICIENTS#########\\\\\\\
 
-double Kp_phi=0;
-double Kd_phi=0;
+double Kp_phi=20;
+double Kd_phi=5;
 double Kp_theta=Kp_phi;
 double Kd_theta=Kd_phi;
 double Kp_shi=0;
@@ -62,7 +63,7 @@ double shi_des =   0;  double shiDes_dot=   0;
 
 float theta ;  float theta_dot;
 float phi   ;  float phi_dot;
-float shi   ;  float shi_dot;
+float shi ;  float shi_dot;
 
 
 
@@ -78,7 +79,7 @@ void setup()
 {
   ////////////////////IMU PARTS\\\\\\\\\\\\\\\\\\\\\\\\\\\
 
-  Serial.begin(115200);
+  //Serial.begin(115200);
   Wire.begin();
 
   #if ARDUINO >= 157
@@ -112,10 +113,9 @@ float dcm[][3] = {cos(pitch) , sin(roll)*sin(pitch), cos(roll)*sin(pitch),
   
   DDRD |= B11110000;                                                        //Configure digital poort 4, 5, 6 and 7 as output.
   PCICR |= (1 << PCIE0);                                                    //Set PCIE0 to enable PCMSK0 scan.  
-  PCMSK0 |= (1 << PCINT0);                                                  //Set PCINT0 (digital input 8) to trigger an interrupt on state change.THROTLE
-  PCMSK0 |= (1 << PCINT4);                                                  //FOR ARMING QUADCOPTER
-  PCMSK0 |= (1 << PCINT5);
-
+  PCMSK0 |= (1 << PCINT0);                                                //Set PCINT0 (digital input 8) to trigger an interrupt on state change.THROTLE
+  PCMSK0 |= (1 << PCINT1);
+  PCMSK0 |= (1 << PCINT4);
   
    for (int cal_int = 0; cal_int < 1250 ; cal_int ++){                           //Wait 5 seconds before continuing.
     PORTD |= B11110000;                                                     //Set digital poort 4, 5, 6 and 7 high.
@@ -134,6 +134,7 @@ float dcm[][3] = {cos(pitch) , sin(roll)*sin(pitch), cos(roll)*sin(pitch),
 ////////CONTROL PARTS ENDS
 
 loop_timer = micros();
+loop_timer_pid = micros();
 
 }
 ////////////IMU function defination start
@@ -204,6 +205,9 @@ void record_data(){
     gyro_cal[0] += gyro[0];                                       //Only compensate after the calibration.
     gyro_cal[1] += gyro[1];                                       //Only compensate after the calibration.
     gyro_cal[2] += gyro[1];     
+     
+  
+ 
 
   }
 }
@@ -211,18 +215,37 @@ void record_data(){
 
 void angle_calc()
 {
- 
-  dtheta[0] = gyrow*gyro[0]*dt/degconvert + accelw*(atan2(acc[1],acc[2])-roll);
-  dtheta[1] = gyrow*gyro[1]*dt/degconvert + accelw*(atan2(-acc[0],acc[2])-pitch);
-  dtheta[2] = gyro[2]*dt/degconvert;
+
+
+float norm = acc[0]*acc[0] + acc[1]*acc[1] + acc[2];
+
+if(norm>1.3225||norm<.7225)
+{
+  accelw=0;
+  gyrow=1;
+}
+else
+{
+  accelw=0.004;
+  gyrow=0.996;
+}
+
+  dtheta[0] = gyrow*gyro[0]*dt*inv_degconvt+ accelw*(atan2(acc[1],acc[2])-roll);
+  dtheta[1] = gyrow*gyro[1]*dt*inv_degconvt+ accelw*(atan2(-acc[0],acc[2])-pitch);
+  dtheta[2] = 0;
 
 
 vec_rot();
 
 
+
 roll  = atan2(dcm[2][1],dcm[2][2]);
-pitch = atan2(-dcm[2][0],sqrt(dcm[2][1]*dcm[2][1]+dcm[2][2]*dcm[2][2]));
-yaw   = atan2(dcm[1][0],dcm[0][0]);
+pitch = asin(-dcm[2][0]);
+//yaw   = atan2(dcm[1][0],dcm[0][0]);
+
+out[0] = int(roll*degconvert);
+out[1] = int(pitch*degconvert);
+
 
   
 }
@@ -255,115 +278,111 @@ for(int i=0;i<3;i++)
 for(int i=0;i<3;i++){
 for(int j=0;j<3;j++)
   {dcm[i][j] = temp_dcm[i][j];
-  //Serial.print(dcm[i][j]);
-  //Serial.print(" ");
-  }
-  //Serial.println();
+
+  }  
+}
+/*
+for(int i=0;i<3;i++)
+dot += dcm[0][i]*dcm[1][i];
+
+float dummy[2];
+for(int i=0;i<3;i++)
+{
+dummy[0] = dcm[0][i] - dot*dcm[1][i]/2;
+dummy[1] = dcm[1][i] - dot*dcm[0][i]/2;
+
+dcm[0][i] = dummy[0];
+dcm[1][i] = dummy[1];
   
 }
-//Serial.println("***********");
-renorm();
-//Serial.println();
-//Serial.println();
-//CALCULATING DOT PRODUCT FOR ERROR CORRECTION
 
-for(int i=0;i<3;i++)
-dot += dcm[i][0]*dcm[i][1];
-//Serial.println(dot);
-
+dcm[2][0] = dcm[0][1]*dcm[1][2] - dcm[1][1]*dcm[0][2];
+dcm[2][1] = dcm[1][0]*dcm[0][2] - dcm[0][0]*dcm[1][2];
+dcm[2][2] = dcm[0][0]*dcm[1][1] - dcm[1][0]*dcm[0][1];
+*/
 }
+
+
 
 void renorm()
 {
+float rnorm = dcm[0][0]*dcm[0][0] + dcm[0][1]*dcm[0][1] + dcm[0][2]*dcm[0][2];
 
-float rnorm = sqrt(dcm[0][0]*dcm[0][0] +  dcm[1][0]*dcm[1][0] +  dcm[2][0]*dcm[2][0]);
 for(int i=0;i<3;i++)
-{
-  dcm[i][0]/=rnorm;
-}
+dcm[0][i] = .5*(3 - rnorm)*dcm[0][i];
 
+rnorm = dcm[1][0]*dcm[1][0] + dcm[1][1]*dcm[1][1] + dcm[1][2]*dcm[1][2];
 
-
-rnorm = sqrt(dcm[0][1]*dcm[0][1] +  dcm[1][1]*dcm[1][1] +  dcm[2][1]*dcm[2][1]);
 for(int i=0;i<3;i++)
-{
-  dcm[i][1]/=rnorm;
-}
+dcm[1][i] = .5*(3 - rnorm)*dcm[1][i];
 
+rnorm = dcm[2][0]*dcm[2][0] + dcm[2][1]*dcm[2][1] + dcm[2][2]*dcm[2][2];
 
-rnorm = sqrt(dcm[0][2]*dcm[0][2] +  dcm[1][2]*dcm[1][2] +  dcm[2][2]*dcm[2][2]);
 for(int i=0;i<3;i++)
-{
-  dcm[i][2]/=rnorm;
-}
-
-
-
-  
+dcm[2][i] = .5*(3 - rnorm)*dcm[2][i];
+ 
 }
 //////////////////IMU functions ends
-unsigned long throttle2;
+unsigned long throttle2,loop_1_time;
 
-void loop()
+void loop()                   //***********************************************************************
 {
- record_data();
-       
-       dt = (micros()-loop_timer)/1000000.0;
-       
-       angle_calc();
-       loop_timer = micros();                                                    //Set the timer for the next loop.
+
+dt = (micros()-loop_timer)/1000000.0;
+loop_timer = micros();
 
 
-Kp_phi = 0.05*rec_input_6 - 50;
+angle_calc();
+
+Kp_phi = 0.05*rec6 - 50;
 Kp_theta = Kp_phi;
-/*
-Serial.print("Roll ");
-Serial.print(int(roll*degconvert));
-Serial.print(" Pitch ");
-Serial.println(int(pitch*degconvert));
-*/
+
+// prt_ang();
+
+
+
 ////////#####
 
 
-phi = int(roll*degconvert);
-phi_dot = gyro[0];
-
-theta = int(pitch*degconvert);
-theta_dot = gyro[1];
-
-u2[0] = Kp_phi*(phi_des-phi) + Kd_phi*(phiDes_dot-phi_dot);                     //.error in phi calculated
-u2[1] = -Kp_theta*(theta_des-theta) - Kd_theta*(thetaDes_dot-theta_dot);        //.error in theta calculated
-u2[2] = 0;                                                                      //YAW is not in self correction 
-
-//Serial.print(phi_des-phi);Serial.print(",");Serial.print(thetaDes_dot-theta_dot);Serial.println();
-//Serial.print("roll is ");Serial.print(roll*degconvert);Serial.println();
-//Serial.println(throttle);
+phi=out[0];
+phi_dot=gyro[0];
+theta=out[1];
+theta_dot=gyro[1];
+u2[0]=Kp_phi*(phi_des-phi)+Kd_phi*(phiDes_dot-phi_dot);                     //.error in phi calculated
+u2[1]=-Kp_theta*(theta_des-theta)-Kd_theta*(thetaDes_dot-theta_dot);        //.error in theta calculated
 
 
-if(rec_input_5>1500){
-   
-    esc_1 = throttle - u2[1] + u2[0]; //Calculate the pulse for esc 1 (front-right - CCW)
-    esc_2 = throttle + u2[1] + u2[0]; //Calculate the pulse for esc 2 (rear-right - CW)
-    esc_3 = throttle + u2[1] - u2[0]; //Calculate the pulse for esc 3 (rear-left - CCW)
-    esc_4 = throttle - u2[1] - u2[0]; //Calculate the pulse for esc 4 (front-left - CW)
+/*
+Serial.print(phi);
+Serial.print(" *** ");
+Serial.println(theta);
+*/       
+                                                                //YAW is not in self correction  YAW correction is removed 
 
-}
-else
+
+if((rec_arm>1500)&&throttle>1010)
 {
-  esc_1 = 1000;
-  esc_2 = 1000;
-  esc_3 = 1000;
-  esc_4 = 1000;
-
+  
+  esc_1 = throttle - u2[1]  + u2[0]; //Calculate the pulse for esc 1 (front-right - CCW)
+  esc_2 = throttle + u2[1]  + u2[0]; //Calculate the pulse for esc 2 (rear-right - CW)
+  esc_3 = throttle + u2[1]  - u2[0]; //Calculate the pulse for esc 3 (rear-left - CCW)
+  esc_4 = throttle - u2[1]  - u2[0]; //Calculate the pulse for esc 4 (front-left - CW)
 
 }
 
-    esc_1 = constrain(esc_1,1000,2000);
-    esc_2 = constrain(esc_2,1000,2000);
-    esc_3 = constrain(esc_3,1000,2000);
-    esc_4 = constrain(esc_4,1000,2000);
-  
-   /* Serial.print(esc_1);
+else{
+esc_1 = 1000;
+esc_2 = 1000;
+esc_3 = 1000;
+esc_4 = 1000;
+}
+      esc_1 = constrain(esc_1,1000,2000);
+      esc_2 = constrain(esc_2,1000,2000);
+      esc_3 = constrain(esc_3,1000,2000);
+      esc_4 = constrain(esc_4,1000,2000);
+
+/*
+         Serial.print(esc_1);
     Serial.print(" ");
     Serial.print(esc_2);
     Serial.print(" ");
@@ -371,20 +390,26 @@ else
     Serial.print(" ");
     Serial.print(esc_4);
     Serial.println();
-   */
+ */  
+      
+      while(micros() - loop_timer_pid < 4000);                                      //We wait until 4000us are passed.
+  //Serial.println(micros() - loop_timer_pid);
+       loop_timer_pid = micros();                                   //Set the timer for the next loop.
 
-   while(micros() - pid_loop_timer < 5000);                                      //We wait until 4000us are passed.
 
-       pid_loop_timer = micros();                                                    //Set the timer for the next loop.
+
 
 
   PORTD |= B11110000;                                                       //Set digital outputs 4,5,6 and 7 high.
-  timer_channel_1 = esc_1 + pid_loop_timer;                                     //Calculate the time of the faling edge of the esc-1 pulse.
-  timer_channel_2 = esc_2 + pid_loop_timer;                                     //Calculate the time of the faling edge of the esc-2 pulse.
-  timer_channel_3 = esc_3 + pid_loop_timer;                                     //Calculate the time of the faling edge of the esc-3 pulse.
-  timer_channel_4 = esc_4 + pid_loop_timer;                                     //Calculate the time of the faling edge of the esc-4 pulse.
+  timer_channel_1 = esc_1 + loop_timer_pid;                                     //Calculate the time of the falling edge of the esc-1 pulse.
+  timer_channel_2 = esc_2 + loop_timer_pid;                                     //Calculate the time of the falling edge of the esc-2 pulse.
+  timer_channel_3 = esc_3 + loop_timer_pid;                                     //Calculate the time of the falling edge of the esc-3 pulse.
+  timer_channel_4 = esc_4 + loop_timer_pid;                                     //Calculate the time of the falling edge of the esc-4 pulse.
 
-  //Serial.println(int(roll*degconvert));
+
+  record_data();
+
+
 
   while(PORTD >= 16){                                                       //Stay in this loop until output 4,5,6 and 7 are low.
     esc_loop_timer = micros();                                              //Read the current time.
@@ -394,7 +419,10 @@ else
     if(timer_channel_4 <= esc_loop_timer)PORTD &= B01111111;                //Set digital output 7 to low if the time is expired.
   }
   
- 
+
+
+
+  
 }
 
 
@@ -403,7 +431,7 @@ else
 
 ISR(PCINT0_vect){
   current_time = micros();
-  //Channel 3=========================================
+  //Channel 1=========================================
   if(PINB & B00000001){                                                     //Is input 8 high?
     if(last_channel_1 == 0){                                                //Input 8 changed from 0 to 1.
       last_channel_1 = 1;                                                   //Remember current input state.
@@ -415,7 +443,7 @@ ISR(PCINT0_vect){
     throttle1 = current_time - timer_1;                             //Channel 1 is current_time - timer_1.
   }
 
-  //Channel 5=========================================
+//Channel 5=========================================
   if(PINB & B00010000){                                                    
     if(last_channel_5 == 0){                                              
       last_channel_5 = 1;                                                   
@@ -424,11 +452,11 @@ ISR(PCINT0_vect){
   }
   else if(last_channel_5 == 1){                                             
     last_channel_5 = 0;                                                    
-    rec_input_5 = current_time - timer_5;                            
+    rec_arm = current_time - timer_5;                            
   }
 
- /* //Channel 6=========================================
-  if(PINB & B00100000){                                                    
+ //Channel 6=========================================
+  if(PINB & B00000010){                                                    
     if(last_channel_6 == 0){                                              
       last_channel_6 = 1;                                                   
       timer_6 = current_time;                                             
@@ -436,16 +464,15 @@ ISR(PCINT0_vect){
   }
   else if(last_channel_6 == 1){                                             
     last_channel_6 = 0;                                                    
-    rec_input_6 = current_time - timer_6;                            
+    rec6 = current_time - timer_6;                            
   }
-*/
-  
+
+
 if(throttle1-last_throttle<5||throttle1-last_throttle>-5)
-throttle = last_throttle;
-last_throttle = throttle1;
+throttle=last_throttle;
+last_throttle=throttle1;
 
 }
-
 
 
 
